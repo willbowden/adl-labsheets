@@ -30,6 +30,7 @@ parser.add_argument("--dataset-root", default=default_dataset_dir)
 parser.add_argument("--log-dir", default=Path("logs"), type=Path)
 parser.add_argument("--learning-rate", default=1e-2, type=float, help="Learning rate")
 parser.add_argument("--num-heads", default=1, type=int, help="Number of Heads")
+parser.add_argument("--transformer-layers", default=1, type=int, help="Number of Transformer Encoder Layers")
 parser.add_argument(
     "--batch-size",
     default=128,
@@ -105,7 +106,7 @@ def main(args):
         pin_memory=True,
     )
 
-    model = CIFAR_Transformer(height=32, width=32, channels=3, patch_size=(8, 8), class_count=10)
+    model = CIFAR_Transformer(height=32, width=32, channels=3, patch_size=(8, 8), class_count=10, n_encoders=args.transformer_layers)
 
     criterion = nn.CrossEntropyLoss()
 
@@ -159,18 +160,47 @@ class Attention(nn.Module):
         return x
 
 class CIFAR_Transformer(nn.Module):
-    def __init__(self, height: int, width: int, channels: int, patch_size: tuple[int, int], class_count: int, n_heads: int=1):
+    def __init__(self, height: int, width: int, channels: int, patch_size: tuple[int, int], class_count: int, n_heads: int=1, n_encoders: int=1):
         super().__init__()
         assert width % patch_size[0] == 0 and height % patch_size[1] == 0
         self.class_count = class_count
         self.n_heads = n_heads
         #TASKS 2, 3.1, 7, 8, 9.1, 11.1
- 
+
+        self.transformer_layers = nn.ModuleList()
+        self.fc_layers = nn.ModuleList()
+
+        for i in range(n_encoders):
+            self.transformer_layers.append(nn.TransformerEncoderLayer(d_model=192, nhead=self.n_heads, batch_first=True))
+        
+        self.fc_layers.append(nn.Linear(192, 100))
+        self.fc_layers.append(nn.Linear(100, 10))
+
+        self.cls_token = nn.Parameter(torch.randn(1, 1, 192))
+
+        self.positional_encoding = nn.Parameter(torch.randn(1, 16 + 1, 192))
 
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
-        x = nn.Identity(images)
         #TASKS 1, 2, 3.2, 7, 8, 9.2, 10, 11.2
+
+        x = patchify(images, 8, 8)
+
+        cls_token = self.cls_token.expand(x.size(0), -1, -1)
+
+        x = torch.cat((cls_token, x), dim=1)
+
+        positional_encoding = self.positional_encoding.expand(x.size(0), -1, -1)
+        x += positional_encoding
+
+        for layer in self.transformer_layers:
+            x = layer(x)
+
+        x = x[:,0,:]
+
+        for layer in self.fc_layers:
+            x = layer(x)
+
         return x
 
 
@@ -194,6 +224,8 @@ class Trainer:
         self.summary_writer = summary_writer
         self.step = 0
 
+        print(f"Num Params: {count_parameters(self.model)}")
+
     def train(
         self,
         epochs: int,
@@ -216,7 +248,6 @@ class Trainer:
                 logits = self.model.forward(batch)
 
                 #TASK 4
-                sys.exit()
 
                 loss = self.criterion(logits, labels)
 
@@ -337,7 +368,7 @@ def get_summary_writer_log_dir(args: argparse.Namespace) -> str:
         from getting logged to the same TB log directory (which you can't easily
         untangle in TB).
     """
-    tb_log_dir_prefix = f'CNN_bs={args.batch_size}_lr={args.learning_rate}_run_'
+    tb_log_dir_prefix = f'CNN_bs={args.batch_size}_lr={args.learning_rate}_enc={args.transformer_layers}_run_'
     i = 0
     while i < 1000:
         tb_log_dir = args.log_dir / (tb_log_dir_prefix + str(i))
@@ -348,9 +379,13 @@ def get_summary_writer_log_dir(args: argparse.Namespace) -> str:
 
 
 def patchify(batch: torch.Tensor, x_size: int, y_size: int):
-    #TASK 1
+    unf = nn.Unfold(kernel_size=(x_size, y_size), stride=(x_size, y_size))
+    batch = unf(batch)
+    batch = torch.transpose(batch, 1, 2)
     return batch
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 if __name__ == "__main__":
     main(parser.parse_args())
