@@ -149,12 +149,18 @@ class Attention(nn.Module):
         q, k, v = qkv[0], qkv[1], qkv[2]
 
         #TASK 12.1 Multiply by scale
+        q *= self.scale;
 
         #TASK 12.2 Multiply queries by keys (transposed)
+        attn = q * torch.transpose(k, dim0=2, dim1=3)
 
         #TASK 12.3 Apply softmax
+        attn = F.softmax(attn, dim=-1)
 
         #TASK 12.4 Multiply the attention and values, then concatenate across heads
+        attn *= v
+
+        x = torch.reshape(attn, (B, S, D))
 
         x = self.proj(x)
         return x
